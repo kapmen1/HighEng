@@ -6,6 +6,7 @@ from config import MODEL_CATALOG, get_model_labels, get_model_info
 from llm import create_llm
 from document.schema import PassageResult
 from document.docx_builder import DocxBuilder
+from document.hwpx_builder import HwpxBuilder
 from utils.text_processing import split_sentences, split_passages
 
 # 페이지 설정
@@ -363,7 +364,14 @@ if "results" in st.session_state:
         if "total_cost" in st.session_state:
             st.caption(f"💰 총 실제 비용: **\\${st.session_state.total_cost:.4f}**")
 
-        col_dl1, col_dl2 = st.columns(2)
+        # 파일명 결정
+        if len(valid_entries) == 1:
+            d = valid_entries[0][1]["result"].to_dict()
+            base_name = f"HighEng_결과_{d.get('No', 'result')}"
+        else:
+            base_name = "HighEng_결과_전체"
+
+        col_dl1, col_dl2, col_dl3 = st.columns(3)
 
         with col_dl1:
             try:
@@ -372,16 +380,10 @@ if "results" in st.session_state:
                     builder.add_passage(entry["result"])
                 docx_bytes = builder.build()
 
-                if len(valid_entries) == 1:
-                    d = valid_entries[0][1]["result"].to_dict()
-                    filename = f"HighEng_결과_{d.get('No', 'result')}.docx"
-                else:
-                    filename = "HighEng_결과_전체.docx"
-
                 st.download_button(
                     label="📄 DOCX 다운로드",
                     data=docx_bytes,
-                    file_name=filename,
+                    file_name=f"{base_name}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True,
                 )
@@ -389,19 +391,33 @@ if "results" in st.session_state:
                 st.error(f"DOCX 생성 실패: {e}")
 
         with col_dl2:
+            try:
+                hwpx_builder = HwpxBuilder()
+                for _, entry in valid_entries:
+                    hwpx_builder.add_passage(entry["result"])
+                hwpx_bytes = hwpx_builder.build()
+
+                st.download_button(
+                    label="📄 한글(HWPX) 다운로드",
+                    data=hwpx_bytes,
+                    file_name=f"{base_name}.hwpx",
+                    mime="application/octet-stream",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"HWPX 생성 실패: {e}")
+
+        with col_dl3:
             if len(valid_entries) == 1:
-                d = valid_entries[0][1]["result"].to_dict()
-                json_data = d
-                filename_json = f"HighEng_결과_{d.get('No', 'result')}.json"
+                json_data = valid_entries[0][1]["result"].to_dict()
             else:
                 json_data = [e["result"].to_dict() for _, e in valid_entries]
-                filename_json = "HighEng_결과_전체.json"
 
             json_str = json.dumps(json_data, ensure_ascii=False, indent=2)
             st.download_button(
                 label="🔧 JSON 다운로드",
                 data=json_str,
-                file_name=filename_json,
+                file_name=f"{base_name}.json",
                 mime="application/json",
                 use_container_width=True,
             )
