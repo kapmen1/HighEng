@@ -1,117 +1,130 @@
-from hwpx import HwpxDocument
+"""템플릿 HWPX 파일의 필드를 채워 넣는 방식으로 HWPX 문서를 생성.
+
+template.py와 동일한 필드 구조 사용:
+- No, Topic, Flow, TF, TFA, TST
+- n1~n11, e1~e11, k1~k11
+- v1~v18
+"""
+import io
+import os
+import re
+import zipfile
 
 from document.schema import PassageResult
 from utils.text_processing import split_sentences
 
+# 템플릿 파일 경로
+TEMPLATE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "templates", "템플릿.hwpx",
+)
+
+
+def _replace_field_text(xml: str, field_name: str, value: str) -> str:
+    """HWPX XML에서 특정 필드의 텍스트를 교체.
+
+    필드 구조: <hp:fieldBegin name="XXX" ...> ... <hp:t>기존값</hp:t> ... <hp:fieldEnd ...>
+    기존 <hp:t> 태그의 내용을 value로 교체한다.
+    """
+    # fieldBegin ~ fieldEnd 사이의 <hp:t> 텍스트를 교체
+    pattern = (
+        r'(hp:fieldBegin[^>]*name="' + re.escape(field_name) + r'"[^>]*>.*?<hp:t>)'
+        r'(.*?)'
+        r'(</hp:t>.*?hp:fieldEnd)'
+    )
+    replacement = rf'\g<1>{re.escape(value)}\g<3>'
+
+    result = re.sub(pattern, replacement, xml, count=1, flags=re.DOTALL)
+
+    # re.escape로 넣은 이스케이프를 원래대로 복원
+    # (re.sub의 replacement에서 \g<1> 등은 처리되지만, value 부분의 이스케이프 필요)
+    # 다른 방식으로 처리
+    def replacer(match):
+        return match.group(1) + value + match.group(3)
+
+    return re.sub(pattern, replacer, xml, count=1, flags=re.DOTALL)
+
 
 class HwpxBuilder:
-    """HWPX 문서 생성기. DocxBuilder와 동일한 레이아웃을 HWPX로 재현."""
+    """템플릿 기반 HWPX 문서 생성기."""
 
     def __init__(self):
-        self.doc = HwpxDocument.new()
-        self._first_passage = True
+        self._passages = []
 
     def add_passage(self, data: PassageResult):
-        """지문 1개의 전체 레이아웃 추가"""
-        d = data.to_dict()
-
-        # 두 번째 지문부터 새 섹션(페이지) 추가
-        if not self._first_passage:
-            self.doc.add_section()
-        self._first_passage = False
-
-        # 1. 헤더: 지문 번호 + 주제
-        self.doc.add_paragraph(f"[{d.get('No', '')}] {d.get('Topic', '')}")
-
-        # 2. 본문 테이블 (번호 / 영어 / 한국어)
-        self._add_eng_kor_table(d.get('Eng', ''), d.get('Kor', ''))
-
-        # 3. FLOW 섹션
-        self._add_flow_section(d.get('Flow', ''))
-
-        # 4. VOCA 섹션
-        self._add_voca_section(data)
-
-        # 5. T/F 섹션
-        self._add_tf_section(d.get('TF', ''), d.get('TFA', ''))
-
-        # 6. SUMMARY 섹션
-        self._add_summary_section(d.get('TST', ''))
-
-    def _add_eng_kor_table(self, eng_text: str, kor_text: str):
-        """영어-한국어 대조 테이블"""
-        self.doc.add_paragraph("■ 본문 (TEXT)")
-
-        eng_sentences = split_sentences(eng_text)
-        kor_sentences = split_sentences(kor_text)
-        row_count = max(len(eng_sentences), len(kor_sentences))
-
-        if row_count == 0:
-            return
-
-        table = self.doc.add_table(rows=row_count, cols=3)
-
-        for i in range(row_count):
-            table.set_cell_text(i, 0, str(i + 1))
-            eng = eng_sentences[i] if i < len(eng_sentences) else ""
-            table.set_cell_text(i, 1, eng)
-            kor = kor_sentences[i] if i < len(kor_sentences) else ""
-            table.set_cell_text(i, 2, kor)
-
-    def _add_flow_section(self, flow_text: str):
-        """흐름 분석 섹션"""
-        self.doc.add_paragraph("■ 흐름 분석 (FLOW)")
-        if not flow_text:
-            return
-        for line in flow_text.split('\n'):
-            line = line.strip()
-            if line:
-                self.doc.add_paragraph(f"  {line}")
-
-    def _add_voca_section(self, data: PassageResult):
-        """핵심 어휘 섹션 (3열 테이블)"""
-        self.doc.add_paragraph("■ 핵심 어휘 (VOCA)")
-
-        voca_list = data.get_voca_list()
-        if not voca_list:
-            return
-
-        cols = 3
-        rows = (len(voca_list) + cols - 1) // cols
-        table = self.doc.add_table(rows=rows, cols=cols)
-
-        for idx, voca in enumerate(voca_list):
-            row_idx = idx // cols
-            col_idx = idx % cols
-            table.set_cell_text(row_idx, col_idx, voca)
-
-    def _add_tf_section(self, tf_text: str, tfa_text: str):
-        """T/F 문제 섹션"""
-        self.doc.add_paragraph("■ True / False")
-
-        if not tf_text:
-            return
-
-        for line in tf_text.split('\n'):
-            line = line.strip()
-            if line:
-                self.doc.add_paragraph(f"  {line}")
-
-        if tfa_text:
-            self.doc.add_paragraph(f"  정답: {tfa_text}")
-
-    def _add_summary_section(self, tst_text: str):
-        """영어 요약 + 한국어 해석 섹션"""
-        self.doc.add_paragraph("■ 요약 (SUMMARY)")
-
-        if not tst_text:
-            return
-
-        for line in tst_text.split('\n'):
-            line = line.strip()
-            if line:
-                self.doc.add_paragraph(f"  {line}")
+        """지문 데이터를 추가. build() 시 각각 별도의 HWPX 섹션으로 생성."""
+        self._passages.append(data)
 
     def build(self) -> bytes:
-        """HWPX 파일을 바이트로 반환 (st.download_button 호환)"""
-        return self.doc.to_bytes()
+        """HWPX 파일을 바이트로 반환."""
+        if not self._passages:
+            return b""
+
+        # 첫 번째 지문으로 템플릿 채우기
+        return self._build_single(self._passages[0])
+
+    def _build_single(self, data: PassageResult) -> bytes:
+        """단일 지문으로 템플릿을 채워 HWPX 바이트 반환."""
+        d = data.to_dict()
+
+        # 템플릿 읽기
+        with zipfile.ZipFile(TEMPLATE_PATH, 'r') as zin:
+            section_xml = zin.read('Contents/section0.xml').decode('utf-8')
+            all_files = {name: zin.read(name) for name in zin.namelist()}
+
+        # 필드 채우기
+        section_xml = _replace_field_text(section_xml, "No", str(d.get("No", "")))
+        section_xml = _replace_field_text(section_xml, "Topic", str(d.get("Topic", "")))
+        section_xml = _replace_field_text(section_xml, "TFA", str(d.get("TFA", "")))
+
+        # 줄바꿈 필드 (\n → \r\n)
+        for field in ["Flow", "TF", "TST"]:
+            value = str(d.get(field, ""))
+            section_xml = _replace_field_text(section_xml, field, value)
+
+        # 본문 문장
+        eng_list = split_sentences(d.get("Eng", ""))
+        kor_list = split_sentences(d.get("Kor", ""))
+        max_idx = max(len(eng_list), len(kor_list))
+
+        for j in range(1, 12):
+            idx = j - 1
+            if idx < max_idx:
+                section_xml = _replace_field_text(section_xml, f"n{j}", str(j))
+                section_xml = _replace_field_text(
+                    section_xml, f"e{j}",
+                    eng_list[idx] if idx < len(eng_list) else " "
+                )
+                section_xml = _replace_field_text(
+                    section_xml, f"k{j}",
+                    kor_list[idx] if idx < len(kor_list) else " "
+                )
+            else:
+                section_xml = _replace_field_text(section_xml, f"n{j}", " ")
+                section_xml = _replace_field_text(section_xml, f"e{j}", " ")
+                section_xml = _replace_field_text(section_xml, f"k{j}", " ")
+
+        # VOCA 정리 (template.py와 동일)
+        voca_items = []
+        for v in range(1, 19):
+            val = d.get(f"v{v}", "")
+            if isinstance(val, str):
+                val = val.strip()
+            if val:
+                voca_items.append(val)
+
+        for i in range(1, 19):
+            if i <= len(voca_items):
+                section_xml = _replace_field_text(section_xml, f"v{i}", voca_items[i - 1])
+            else:
+                section_xml = _replace_field_text(section_xml, f"v{i}", " ")
+
+        # 수정된 section0.xml로 HWPX 재조립
+        all_files['Contents/section0.xml'] = section_xml.encode('utf-8')
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for name, content in all_files.items():
+                zout.writestr(name, content)
+        buf.seek(0)
+        return buf.getvalue()
