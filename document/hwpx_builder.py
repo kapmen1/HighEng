@@ -21,10 +21,7 @@ TEMPLATE_PATH = os.path.join(
 
 
 def _replace_field_text(xml: str, field_name: str, value: str) -> str:
-    """HWPX XML에서 특정 필드의 텍스트를 교체.
-
-    필드 구조: <hp:fieldBegin name="XXX" ...> ... <hp:t>기존값</hp:t> ... <hp:fieldEnd ...>
-    """
+    """HWPX XML에서 특정 필드의 텍스트를 교체."""
     pattern = (
         r'(hp:fieldBegin[^>]*name="' + re.escape(field_name) + r'"[^>]*>.*?<hp:t>)'
         r'(.*?)'
@@ -99,6 +96,15 @@ def _fill_section_xml(section_xml: str, data: PassageResult) -> str:
     return section_xml
 
 
+def _extract_section_body(section_xml: str) -> str:
+    """section XML에서 <hs:sec ...> 루트 태그 내부의 본문만 추출."""
+    # 여는 태그 제거
+    body = re.sub(r'^<\?xml[^>]*\?>\s*<hs:sec[^>]*>', '', section_xml, count=1)
+    # 닫는 태그 제거
+    body = re.sub(r'</hs:sec>\s*$', '', body)
+    return body
+
+
 class HwpxBuilder:
     """템플릿 기반 HWPX 문서 생성기."""
 
@@ -110,27 +116,37 @@ class HwpxBuilder:
         self._passages.append(data)
 
     def build(self) -> bytes:
-        """모든 지문을 포함한 HWPX 파일을 바이트로 반환."""
+        """모든 지문을 하나의 section0.xml에 합쳐서 HWPX 바이트 반환."""
         if not self._passages:
             return b""
 
         # 템플릿 읽기
         with zipfile.ZipFile(TEMPLATE_PATH, 'r') as zin:
             template_section = zin.read('Contents/section0.xml').decode('utf-8')
-            content_hpf = zin.read('Contents/content.hpf').decode('utf-8')
             all_files = {name: zin.read(name) for name in zin.namelist()}
 
-        # 각 지문마다 section XML 생성
-        for i, passage in enumerate(self._passages):
-            filled_xml = _fill_section_xml(template_section, passage)
-            section_name = f'Contents/section{i}.xml'
-            all_files[section_name] = filled_xml.encode('utf-8')
+        if len(self._passages) == 1:
+            # 단일 지문: 그대로 채우기
+            filled = _fill_section_xml(template_section, self._passages[0])
+            all_files['Contents/section0.xml'] = filled.encode('utf-8')
+        else:
+            # 다중 지문: 각 지문을 채운 후 본문을 하나의 section에 연결
+            # 첫 번째 지문을 기본 section으로 사용
+            first_filled = _fill_section_xml(template_section, self._passages[0])
 
-        # content.hpf 매니페스트에 추가 section 등록
-        if len(self._passages) > 1:
-            content_hpf = self._update_manifest(content_hpf)
+            # 닫는 태그 앞에 나머지 지문의 본문을 삽입
+            additional_bodies = ""
+            for passage in self._passages[1:]:
+                filled = _fill_section_xml(template_section, passage)
+                body = _extract_section_body(filled)
+                additional_bodies += body
 
-        all_files['Contents/content.hpf'] = content_hpf.encode('utf-8')
+            # </hs:sec> 바로 앞에 삽입
+            first_filled = first_filled.replace(
+                '</hs:sec>',
+                additional_bodies + '</hs:sec>',
+            )
+            all_files['Contents/section0.xml'] = first_filled.encode('utf-8')
 
         # HWPX 재조립
         buf = io.BytesIO()
@@ -139,30 +155,3 @@ class HwpxBuilder:
                 zout.writestr(name, content)
         buf.seek(0)
         return buf.getvalue()
-
-    def _update_manifest(self, hpf_xml: str) -> str:
-        """content.hpf에 추가 section을 manifest/spine에 등록."""
-        # section1, section2, ... 에 대한 manifest item 추가
-        manifest_items = ""
-        spine_items = ""
-        for i in range(1, len(self._passages)):
-            manifest_items += (
-                f'<opf:item id="section{i}" '
-                f'href="Contents/section{i}.xml" '
-                f'media-type="application/xml"/>'
-            )
-            spine_items += f'<opf:itemref idref="section{i}" linear="yes"/>'
-
-        # manifest에 추가 (</opf:manifest> 바로 앞)
-        hpf_xml = hpf_xml.replace(
-            '</opf:manifest>',
-            manifest_items + '</opf:manifest>',
-        )
-
-        # spine에 추가 (</opf:spine> 바로 앞)
-        hpf_xml = hpf_xml.replace(
-            '</opf:spine>',
-            spine_items + '</opf:spine>',
-        )
-
-        return hpf_xml
