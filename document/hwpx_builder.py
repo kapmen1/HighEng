@@ -119,6 +119,14 @@ class HwpxBuilder:
             else:
                 section_xml = _replace_field_text(section_xml, f"v{i}", " ")
 
+        # 레이아웃 캐시 제거 (한글이 열 때 자동 재계산)
+        section_xml = re.sub(
+            r'<hp:linesegarray>.*?</hp:linesegarray>',
+            '',
+            section_xml,
+            flags=re.DOTALL,
+        )
+
         # 수정된 section0.xml로 HWPX 재조립
         all_files['Contents/section0.xml'] = section_xml.encode('utf-8')
 
